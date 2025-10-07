@@ -35,7 +35,7 @@ Adjust precision by setting `mp.mp.dps = desired_digits`.
 
 ### Example 1 – Gauss–Legendre IRK
 
-At the bottom of `guass-legendre.py` you’ll see:
+At the bottom of `gauss-legendre.py` you’ll see:
 
 ```
 if __name__ == "__main__":
@@ -121,7 +121,7 @@ Each contains the computed coefficients and their order-condition error.
 ## Import Usage in Python
 
 ```
-from gauss_legendre import build_gauss_legendre_irk
+from gauss-legendre import build_gauss_legendre_irk
 import mpmath as mp
 
 mp.mp.dps = 100
