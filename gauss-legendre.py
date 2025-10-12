@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import mpmath as mp
 mp.dps = 100
 
@@ -112,3 +110,4 @@ if __name__ == "__main__":
         base = f"gauss_legendre_s{s}"
         write_A_b_c_triplets(A,b,c,base,digits=80)
         print(f"Written: {base}_A.txt, _b.txt, _c.txt, _triplets.txt\n")
+
