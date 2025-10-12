@@ -1,168 +1,114 @@
-import mpmath as mp
+#!/usr/bin/env python3
 
+import mpmath as mp
+mp.dps = 100
+
+#legendre roots and weights generator
 def legendre_roots_and_weights(n):
-    #initial guess for legendre polynomial roots using cos formula
-    xs = [mp.cos(mp.pi * (4*k - 1) / (4*n + 2)) for k in range(1, n+1)]
-    #define legendre polynomial of degree n
+    xs = [mp.cos(mp.pi*(4*k - 1)/(4*n + 2)) for k in range(1, n+1)]
     Pn = lambda x: mp.legendre(n, x)
 
     def Pn_prime(x):
-        #compute derivative of legendre polynomial
-        if n == 0:
-            return mp.mpf('0')
-        elif n == 1:
-            return mp.mpf('1')
+        den = x*x - 1
+        if abs(den) > mp.mpf('1e-30'):
+            return n * (x * mp.legendre(n, x) - mp.legendre(n-1, x)) / den
         else:
-            if abs(x*x - 1) < mp.eps:
-                return mp.mpf('0')
-            return n * (x * mp.legendre(n, x) - mp.legendre(n-1, x)) / (x*x - 1)
+            return mp.diff(Pn, x)
 
-    #newton-raphson iteration to find exact roots
     for k in range(n):
         x = xs[k]
-        for _ in range(100):
-            fx = Pn(x)
-            dfx = Pn_prime(x)
-            if abs(dfx) < mp.eps:
+        for _ in range(80):
+            fx, dfx = Pn(x), Pn_prime(x)
+            if dfx == 0:
                 break
-            step = fx / dfx
-            x_new = x - step
+            x_new = x - fx/dfx
             if mp.almosteq(x_new, x, rel_eps=mp.eps*100, abs_eps=mp.eps*100):
                 break
             x = x_new
         xs[k] = x
 
-    #compute quadrature weights using derivative formula
     ws = []
     for x in xs:
         dPn = Pn_prime(x)
-        if abs(dPn) < mp.eps or abs(1 - x**2) < mp.eps:
-            w = mp.mpf('0')
-        else:
-            w = mp.mpf(2) / ((1 - x**2) * (dPn**2))
-        ws.append(w)
-    return xs, ws
+        ws.append( mp.mpf(2) / ((1 - x*x) * (dPn*dPn)) )
 
-def power_vandermonde(c):
-    #build vandermonde matrix with powers of c
-    s = len(c)
-    V = mp.matrix(s, s)
-    for i in range(s):
-        t = mp.mpf('1')
-        for k in range(s):
-            V[i, k] = t
-            t *= c[i]
-    return V
+    c = [ (x + 1)/2 for x in xs ]
+    b = [ w/2 for w in ws ]
+    return c, b
 
-def invert(M):
-    #matrix inversion with fallback methods
-    s = M.rows
-    I = mp.eye(s)
-    return M**-1 if hasattr(M, '__pow__') else mp.lu_solve(M, I)  
+#lagrange basis polynomial
+def lagrange_basis(c, j):
+    xj = c[j]
+    others = [c[k] for k in range(len(c)) if k != j]
+    denom = mp.mpf(1)
+    for xk in others:
+        denom *= (xj - xk)
+    def Lj(x):
+        num = mp.mpf(1)
+        for xk in others:
+            num *= (x - xk)
+        return num / denom
+    return Lj
 
+#build gauss legendre irk tableau
 def build_gauss_legendre_irk(s):
-    #get legendre quadrature points and weights
-    x, w = legendre_roots_and_weights(s)
+    print(f"Computing Gauss–Legendre IRK (s={s}) …")
+    c, b = legendre_roots_and_weights(s)
 
-    #transform from [-1,1] to [0,1] interval
-    c = [ (xi + 1)/2 for xi in x ]
-    b = [ wi/2 for wi in w ]
+    A = [[mp.mpf(0) for _ in range(s)] for _ in range(s)]
+    for j in range(s):
+        Lj = lagrange_basis(c, j)
+        for i in range(s):
+            A[i][j] = mp.quad(Lj, [0, c[i]])
 
-    #build and invert vandermonde matrix
-    V = power_vandermonde(c)
-    Vinv = invert(V)
+    print("Row-sum check (ΣA[i,:] ≈ c[i]):")
+    for i in range(s):
+        rs, diff = mp.fsum(A[i]), mp.fsum(A[i]) - c[i]
+        print(f"  i={i+1}: ΣA={mp.nstr(rs,25)}  c={mp.nstr(c[i],25)}  diff={mp.nstr(diff,5)}")
 
-    #compute monomial integration matrix
-    sN = s
-    monoint = mp.matrix(sN, sN)  # (i,k)
-    for i in range(sN):
-        for k in range(sN):
-            monoint[i, k] = c[i]**(k+1) / mp.mpf(k+1)
+    print("Moment check (b·c^k ≈ 1/(k+1)):")
+    for k in range(min(10, 2*s)):
+        lhs = mp.fsum([b[j]*c[j]**k for j in range(s)])
+        rhs = mp.mpf(1)/(k+1)
+        print(f"  k={k:2d}: {mp.nstr(lhs,25)}  target={mp.nstr(rhs,25)}  err={mp.nstr(lhs-rhs,5)}")
 
-    #compute butcher tableau matrix A
-    A = monoint * Vinv
-    A_list = [[A[i, j] for j in range(sN)] for i in range(sN)]
-    
-    #apply correction to ensure A·1 = c condition
-    print(f"  Applying correction to ensure A·1 = c...")
-    ones = [mp.mpf('1')]*sN
-    A1 = [sum(A_list[i][j]*ones[j] for j in range(sN)) for i in range(sN)]
-    
-    for i in range(sN):
-        correction = c[i] - A1[i]
-        for j in range(sN):
-            A_list[i][j] += correction / sN
-    
-    #verify correction worked
-    print(f"  Final verification...")
-    A1_corrected = [sum(A_list[i][j]*ones[j] for j in range(sN)) for i in range(sN)]
-    err_final = mp.sqrt(sum((A1_corrected[i]-c[i])**2 for i in range(sN)))
-    print(f"  Corrected error: {err_final}")
-    
-    return A_list, b, c
+    return A, b, c
 
-def nstr_fixed(x, digits=80):
-    #format number to fixed precision string
-    return mp.nstr(x, n=digits)
+#format number string
+def nstr_fixed(x, digits=80): return mp.nstr(x, n=digits)
 
+#write tableau to files
 def write_A_b_c_triplets(A, b, c, basename, digits=80):
-    #write butcher tableau coefficients to separate files
     s = len(b)
-
-    #write A matrix coefficients
-    with open(f"{basename}_A.txt", "w") as fa:
+    with open(f"{basename}_A.txt","w") as fa:
         for i in range(s):
             for j in range(s):
-                fa.write(f"{i+1} {j+1} {nstr_fixed(A[i][j], digits)}\n")
-
-    #write b vector coefficients
-    with open(f"{basename}_b.txt", "w") as fb:
+                fa.write(f"{i+1} {j+1} {nstr_fixed(A[i][j],digits)}\n")
+    with open(f"{basename}_b.txt","w") as fb:
         for j in range(s):
-            fb.write(f"{j+1} {nstr_fixed(b[j], digits)}\n")
-
-    #write c vector coefficients
-    with open(f"{basename}_c.txt", "w") as fc:
+            fb.write(f"{j+1} {nstr_fixed(b[j],digits)}\n")
+    with open(f"{basename}_c.txt","w") as fc:
         for i in range(s):
-            fc.write(f"{i+1} {nstr_fixed(c[i], digits)}\n")
-
-    #write combined triplets format
-    with open(f"{basename}_triplets.txt", "w") as ft:
-        # A
+            fc.write(f"{i+1} {nstr_fixed(c[i],digits)}\n")
+    with open(f"{basename}_triplets.txt","w") as ft:
         for i in range(s):
             for j in range(s):
-                ft.write(f"{i+1} {j+1} {nstr_fixed(A[i][j], digits)}\n")
-        # c
+                ft.write(f"{i+1} {j+1} {nstr_fixed(A[i][j],digits)}\n")
         for i in range(s):
-            ft.write(f"{i+1} 0 {nstr_fixed(c[i], digits)}\n")
-        # b
+            ft.write(f"{i+1} 0 {nstr_fixed(c[i],digits)}\n")
         for j in range(s):
-            ft.write(f"0 {j+1} {nstr_fixed(b[j], digits)}\n")
+            ft.write(f"0 {j+1} {nstr_fixed(b[j],digits)}\n")
 
-def sanity_checks(A, b, c):
-    #verify butcher tableau conditions
-    s = len(b)
-    ones = [mp.mpf('1')]*s
-    A1 = [sum(A[i][j]*ones[j] for j in range(s)) for i in range(s)]
-    err1 = mp.sqrt(sum((A1[i]-c[i])**2 for i in range(s)))
-    sb = sum(b)
-    return err1, sb
-
-
-
+#main execution block
 if __name__ == "__main__":
-    #main execution for gauss-legendre quadrature
-    mp.mp.dps = 200  
-
-    for s in (6, 7):
-        #build butcher tableau for different stage counts
-        A, b, c = build_gauss_legendre_irk(s)
-        err1, sb = sanity_checks(A, b, c)
-        print(f"\nGauss–Legendre IRK: stages={s}, order={2*s}")
-        print("||A·1 - c||_2 =", nstr_fixed(err1, 30))
-        print("sum(b)        =", nstr_fixed(sb, 30))
-        print("c in (0,1)?   =", all((ci > 0) and (ci < 1) for ci in c))
-
-        #save coefficients to files
+    mp.mp.dps = 100
+    for s in (7,8):
+        A,b,c = build_gauss_legendre_irk(s)
+        err_rows = mp.sqrt(mp.fsum([(mp.fsum(A[i]) - c[i])**2 for i in range(s)]))
+        err_mom  = max(abs(mp.fsum([b[j]*c[j]**k for j in range(s)]) - mp.mpf(1)/(k+1)) for k in range(2*s-1))
+        print(f"||A·1−c||₂ = {mp.nstr(err_rows,40)}")
+        print(f"max moment error = {mp.nstr(err_mom,40)}")
+        print(f"sum(b) = {mp.nstr(mp.fsum(b),40)}\n")
         base = f"gauss_legendre_s{s}"
-        write_A_b_c_triplets(A, b, c, base, digits=80)
-        print(f"Written: {base}_A.txt, {base}_b.txt, {base}_c.txt, {base}_triplets.txt")
+        write_A_b_c_triplets(A,b,c,base,digits=80)
+        print(f"Written: {base}_A.txt, _b.txt, _c.txt, _triplets.txt\n")
